@@ -37,6 +37,33 @@ typedef struct elf_prog_header_t {
   uint64 align;  /* Segment alignment */
 } elf_prog_header;
 
+typedef struct elf_section_header_t {
+  uint32   sh_name;      /* Section name (string tbl index) */
+  uint32   sh_type;      /* Section type */
+  uint64   sh_flags;     /* Section flags */
+  uint64   sh_addr;      /* Section virtual addr at execution */
+  uint64   sh_offset;    /* Section file offset */
+  uint64   sh_size;      /* Section size in bytes */
+  uint32   sh_link;      /* Link to another section */
+  uint32   sh_info;      /* Additional section information */
+  uint64   sh_addralign; /* Section alignment */
+  uint64   sh_entsize;   /* Entry size if section holds table */
+} elf_section_header;
+
+typedef struct elf_sym_t {
+	uint32	st_name;
+	unsigned char	st_info;
+	unsigned char	st_other;
+	uint16	st_shndx;
+	uint64	st_value;
+	uint64	st_size;
+} elf_sym;
+
+typedef struct function_names_t {
+  char name[256];
+  uint64 addr;
+} function_names;
+
 #define ELF_MAGIC 0x464C457FU  // "\x7FELF" in little endian
 #define ELF_PROG_LOAD 1
 
@@ -57,7 +84,9 @@ typedef struct elf_ctx_t {
 
 elf_status elf_init(elf_ctx *ctx, void *info);
 elf_status elf_load(elf_ctx *ctx);
+elf_status elf_load_section_header(elf_ctx *ctx, int *func_num, function_names *fn);
 
 void load_bincode_from_host_elf(process *p);
+void load_function_names_from_host_elf(process *p, int *func_num, function_names *fn);
 
 #endif
