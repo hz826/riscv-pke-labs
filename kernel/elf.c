@@ -190,8 +190,13 @@ void make_addr_line(elf_ctx *ctx, char *debug_line, uint64 length) {
         }
 endop:;
     }
-    // for (int i = 0; i < p->line_ind; i++)
+    // for (int i = 0; i < file_ind; i++) {
+    //     sprint("%s %s\n", p->dir[p->file[i].dir], p->file[i].file);
+    // }
+    // for (int i = 0; i < p->line_ind; i++) {
     //     sprint("%p %d %d\n", p->line[i].addr, p->line[i].line, p->line[i].file);
+    //     sprint("%s/%s\n", p->dir[p->line[i].file], p->file[p->line[i].file].file);
+    // }
 }
 
 //
@@ -284,4 +289,100 @@ void load_bincode_from_host_elf(process *p) {
   spike_file_close( info.f );
 
   sprint("Application program entry point (virtual address): 0x%lx\n", p->trapframe->epc);
+}
+
+elf_status elf_load_debug_line(elf_ctx *ctx) {
+  int size;
+  elf_sect_header section_headers[ctx->ehdr.shnum];
+  size = sizeof(section_headers);
+  if (elf_fpread(ctx, (void *)section_headers, size, ctx->ehdr.shoff) != size) return EL_EIO;
+
+  elf_sect_header *shstrtab = section_headers + ctx->ehdr.shstrndx, *debug_line = 0;
+
+  char shstr_table[shstrtab->size];
+  size = sizeof(shstr_table);
+  if (elf_fpread(ctx, (void *)shstr_table, size, shstrtab->offset) != size) return EL_EIO;
+  
+  for (int i=0;i<ctx->ehdr.shnum;i++) {
+    char * section_name = shstr_table + section_headers[i].name;
+    // sprint("[%02d] %s\n", i, section_name);
+    if (strcmp(section_name, ".debug_line") == 0) debug_line = section_headers + i;
+  }
+
+//   sprint("%d %d\n", debug_line->size, debug_line->offset);
+
+  static char debug[65536];
+
+  size = debug_line->size;
+  if (elf_fpread(ctx, (void *)debug, size, debug_line->offset) != size) return EL_EIO;
+
+  make_addr_line(ctx, debug, size);
+
+  return EL_OK;
+}
+
+void load_debug_lines_from_host_elf(process *p) {
+  arg_buf arg_bug_msg;
+
+  // retrieve command line arguements
+  size_t argc = parse_args(&arg_bug_msg);
+  if (!argc) panic("You need to specify the application program!\n");
+
+  // sprint("Application: %s\n", arg_bug_msg.argv[0]);
+
+  //elf loading. elf_ctx is defined in kernel/elf.h, used to track the loading process.
+  elf_ctx elfloader;
+  // elf_info is defined above, used to tie the elf file and its corresponding process.
+  elf_info info;
+
+  info.f = spike_file_open(arg_bug_msg.argv[0], O_RDONLY, 0);
+  info.p = p;
+  // IS_ERR_VALUE is a macro defined in spike_interface/spike_htif.h
+  if (IS_ERR_VALUE(info.f)) panic("Fail on openning the input application program.\n");
+
+  // init elfloader context. elf_init() is defined above.
+  if (elf_init(&elfloader, &info) != EL_OK)
+    panic("fail to init elfloader.\n");
+
+  // load elf. elf_load() is defined above.
+  if (elf_load(&elfloader) != EL_OK) panic("Fail on loading elf.\n");
+
+  // entry (virtual, also physical in lab1_x) address
+  // p->trapframe->epc = elfloader.ehdr.entry;
+
+  elf_load_debug_line(&elfloader);
+
+  // close the host spike file
+  spike_file_close( info.f );
+
+  // sprint("Application program entry point (virtual address): 0x%lx\n", p->trapframe->epc);
+}
+
+void load_file(process *p, char *filename, int linenum, char *line) {
+  spike_file_t *f = spike_file_open(filename, O_RDONLY, 0);
+
+  if (IS_ERR_VALUE(f)) panic("Fail on openning the input application program.\n");
+
+  static char buf[256];
+  int offset = 0, ln = 1;
+  char *s = line;
+
+  while (1) {
+    int size = spike_file_pread(f, buf, sizeof(buf), offset);
+    if (size <= 0) break;
+    offset += size;
+    // sprint(buf);
+    for (int i=0;i<size;i++) {
+      if (buf[i] == '\n') {
+        ++ln;
+        if (ln > linenum) goto end;
+      } else {
+        if (ln == linenum) *(s++) = buf[i];
+      }
+    }
+  }
+  end:;
+  *s = '\0';
+
+  spike_file_close(f);
 }

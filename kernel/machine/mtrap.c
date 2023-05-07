@@ -1,6 +1,8 @@
 #include "kernel/riscv.h"
 #include "kernel/process.h"
 #include "spike_interface/spike_utils.h"
+#include "kernel/elf.h"
+#include "util/string.h"
 
 static void handle_instruction_access_fault() { panic("Instruction access fault!"); }
 
@@ -8,7 +10,26 @@ static void handle_load_access_fault() { panic("Load access fault!"); }
 
 static void handle_store_access_fault() { panic("Store/AMO access fault!"); }
 
-static void handle_illegal_instruction() { panic("Illegal instruction!"); }
+static void handle_illegal_instruction() {
+  // sprint("mepc = %p\n", read_csr(mepc));
+  load_debug_lines_from_host_elf(current);
+
+  static char filename[1024], line[1024];
+  int linenum = -1;
+
+  for (int i = 0; i < current->line_ind; i++) if (current->line[i].addr == read_csr(mepc)) {
+    memset(filename, 0, sizeof(filename));
+    strcpy(filename, current->dir[current->line[i].file]);
+    strcpy(filename+strlen(filename), "/");
+    strcpy(filename+strlen(filename), current->file[current->line[i].file].file);
+    linenum = current->line[i].line;
+    sprint("Runtime error at %s:%d\n", filename, linenum);
+    break;
+  }
+  load_file(current, filename, linenum, line);
+  sprint("%s\n", line);
+  panic("Illegal instruction!");
+}
 
 static void handle_misaligned_load() { panic("Misaligned Load!"); }
 
