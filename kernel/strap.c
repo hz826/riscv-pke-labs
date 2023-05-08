@@ -9,6 +9,7 @@
 #include "pmm.h"
 #include "vmm.h"
 #include "util/functions.h"
+#include "memlayout.h"
 
 #include "spike_interface/spike_utils.h"
 
@@ -62,7 +63,15 @@ void handle_user_page_fault(uint64 mcause, uint64 sepc, uint64 stval) {
       // dynamically increase application stack.
       // hint: first allocate a new physical page, and then, maps the new page to the
       // virtual address that causes the page fault.
-      panic( "You need to implement the operations that actually handle the page fault in lab2_3.\n" );
+      // panic( "You need to implement the operations that actually handle the page fault in lab2_3.\n" );
+
+      if (stval < USER_STACK_TOP && stval >= USER_STACK_TOP - USER_STACK_PAGE_LIMIT * PGSIZE) {
+        void *pa = alloc_page();
+        if (pa == 0) panic("uvmalloc mem alloc falied\n");
+
+        user_vm_map(current->pagetable, stval, 1, (uint64)pa,
+         prot_to_type(PROT_WRITE | PROT_READ, 1));
+      }
 
       break;
     default:
