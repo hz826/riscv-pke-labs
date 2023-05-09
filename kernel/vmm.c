@@ -10,6 +10,7 @@
 #include "util/string.h"
 #include "spike_interface/spike_utils.h"
 #include "util/functions.h"
+#include "process.h"
 
 /* --- utility functions for virtual address mapping --- */
 //
@@ -202,4 +203,92 @@ void user_vm_unmap(pagetable_t page_dir, uint64 va, uint64 size, int free) {
 
     free_page((void*) pa);
   }
+}
+
+alloc_info *last_alloc = NULL;
+
+uint64 user_malloc(uint64 size, int perm) {
+  sprint(">>> malloc begin\n");
+  size += sizeof(alloc_info);
+
+  g_ufree_page = ((g_ufree_page+7) >> 3) << 3;
+
+  if (ROUNDDOWN(g_ufree_page, PGSIZE) != ROUNDDOWN(g_ufree_page+sizeof(alloc_info)-1, PGSIZE))
+    g_ufree_page = ROUNDDOWN(g_ufree_page+sizeof(alloc_info)-1, PGSIZE);
+
+  uint64 first = ROUNDDOWN(g_ufree_page, PGSIZE), last = ROUNDDOWN(g_ufree_page + size - 1, PGSIZE); // virtual
+  
+  sprint(">>> first = %p    last = %p\n", first, last);
+  
+  for (uint64 vi = first; vi <= last; vi += PGSIZE) {
+    pte_t *pte = page_walk((pagetable_t)current->pagetable, vi, 1);
+    if (!(*pte & PTE_V)) {
+      uint64 pa = (uint64)alloc_page();
+      sprint(">>> ALLOC PAGE %p\n", pa);
+      *pte = PA2PTE(pa) | perm | PTE_V;
+    }
+    sprint(">>> *pte = %p\n", *pte);
+  }
+
+  sprint(">>> walk finished\n");
+
+  alloc_info *header = (alloc_info*) user_va_to_pa((pagetable_t)current->pagetable, (void*)g_ufree_page);
+  sprint(">>> header = %p\n", header);
+  header->pre = last_alloc;
+  header->suc = NULL;
+  header->size = size;
+  if (last_alloc) last_alloc->suc = header;
+  last_alloc = header;
+
+  uint64 va_ret = g_ufree_page + sizeof(alloc_info);
+  g_ufree_page += size;
+  sprint(">>> header.pre = %p  header.suc = %p  header.siz = %d\n", header->pre, header->suc, header->size);
+  sprint(">>> last_alloc = %p\n", last_alloc);
+  sprint(">>> malloc end\n");
+  return va_ret;
+}
+
+void free_page_by_va(uint64 va) {
+  pte_t *pte;
+  if ((pte = page_walk((pagetable_t)current->pagetable, va, 0)) == 0) return;
+  *pte &= ~PTE_V;
+  uint64 pa = PTE2PA((uint64) *pte);
+  sprint(">>> FREE PAGE %p\n", pa);
+  free_page((void*) pa);
+}
+
+void user_free(uint64 va) {
+  sprint(">>> free begin\n");
+  va -= sizeof(alloc_info);
+  alloc_info *header = (alloc_info*) user_va_to_pa((pagetable_t)current->pagetable, (void*)va);
+
+  sprint(">>> header = %p\n", header);
+  sprint(">>> header.pre = %p  header.suc = %p  header.siz = %d\n", header->pre, header->suc, header->size);
+
+  uint64 first = ROUNDDOWN(va, PGSIZE), last = ROUNDDOWN(va + header->size - 1, PGSIZE);
+  for (uint64 vi = first; vi <= last; vi += PGSIZE) {
+    if (vi != first && vi != last) {
+      free_page_by_va(vi);
+    }
+  }
+
+  uint64 pre = header->pre ? ROUNDDOWN((uint64)header->pre + header->pre->size - 1, PGSIZE) : 0;
+  uint64 suc = ROUNDDOWN((uint64)header->suc, PGSIZE);
+
+  first = (uint64)user_va_to_pa((pagetable_t)current->pagetable, (void*)first);
+  last  = (uint64)user_va_to_pa((pagetable_t)current->pagetable, (void*)last);
+  sprint(">>> first = %p  last = %p\n", first, last);
+  sprint(">>> pre = %p  suc = %p\n", pre, suc);
+
+  if (first == last) {
+    if (pre != first && suc != last) free_page_by_va(first);
+  } else {
+    if (pre != first) free_page_by_va(first);
+    if (suc != last) free_page_by_va(last);
+  }
+
+  if (header == last_alloc) last_alloc = header->pre;
+  if (header->pre) header->pre->suc = header->suc;
+  if (header->suc) header->suc->pre = header->pre;
+  sprint(">>> free end\n");
 }

@@ -19,6 +19,10 @@ int main(void) {
   char str[20] = "hello, world!!!";
   char *m = (char *)better_malloc(100);
   char *p = (char *)better_malloc(50);
+
+  printu("malloc m = %p\n", m);
+  printu("malloc p = %p\n", p);
+
   if((uint64)p - (uint64)m > 512 ){
     printu("you need to manage the vm space precisely!");
     exit(-1);

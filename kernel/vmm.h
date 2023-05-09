@@ -31,4 +31,13 @@ void *user_va_to_pa(pagetable_t page_dir, void *va);
 void user_vm_map(pagetable_t page_dir, uint64 va, uint64 size, uint64 pa, int perm);
 void user_vm_unmap(pagetable_t page_dir, uint64 va, uint64 size, int free);
 
+uint64 user_malloc(uint64 size, int perm);
+void free_page_by_va(uint64 va);
+void user_free(uint64 va);
+
+typedef struct alloc_info_t {
+  struct alloc_info_t *pre, *suc; // physical address
+  uint64 size;
+} alloc_info;
+
 #endif
