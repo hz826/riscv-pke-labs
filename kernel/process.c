@@ -17,6 +17,7 @@
 #include "memlayout.h"
 #include "sched.h"
 #include "spike_interface/spike_utils.h"
+#include "util/functions.h"
 
 //Two functions defined in kernel/usertrap.S
 extern char smode_trap_vector[];
@@ -144,6 +145,10 @@ process* alloc_process() {
 
   procs[i].total_mapped_region = 3;
   // return after initialization.
+
+  procs[i].child_head = procs[i].child_pre = procs[i].child_suc = NULL;
+  procs[i].wait_pid = 0;
+
   return &procs[i];
 }
 
@@ -156,6 +161,17 @@ int free_process( process* proc ) {
   // but for proxy kernel, it (memory leaking) may NOT be a really serious issue,
   // as it is different from regular OS, which needs to run 7x24.
   proc->status = ZOMBIE;
+  
+  if (!proc->parent) return 0;
+  if (proc->parent->child_head == proc) proc->parent->child_head = proc->child_suc;
+  if (proc->child_pre) proc->child_pre->child_suc = proc->child_suc;
+  if (proc->child_suc) proc->child_suc->child_pre = proc->child_pre;
+
+  if (proc->parent->wait_pid == -1 || proc->parent->wait_pid == proc->pid) {
+    proc->parent->wait_pid = 0;
+    proc->parent->trapframe->regs.a0 = proc->pid;
+    insert_to_ready_queue(proc->parent);
+  }
 
   return 0;
 }
@@ -172,7 +188,15 @@ int do_fork( process* parent)
   sprint( "will fork a child from parent %d.\n", parent->pid );
   process* child = alloc_process();
 
+  if (parent->child_head) {
+    parent->child_head->child_pre = child;
+    child->child_suc = parent->child_head;
+  } else {
+    parent->child_head = child;
+  }
+
   for( int i=0; i<parent->total_mapped_region; i++ ){
+    // sprint(">>> parent->mapped_info[%d].va = %p    .type = %d\n", i, parent->mapped_info[i].va, parent->mapped_info[i].seg_type);
     // browse parent's vm space, and copy its trapframe and data segments,
     // map its code segment.
     switch( parent->mapped_info[i].seg_type ){
@@ -207,6 +231,24 @@ int do_fork( process* parent)
         child->mapped_info[child->total_mapped_region].npages =
           parent->mapped_info[i].npages;
         child->mapped_info[child->total_mapped_region].seg_type = CODE_SEGMENT;
+        child->total_mapped_region++;
+        break;
+
+      case DATA_SEGMENT:
+        for (int j=0; j<parent->mapped_info[i].npages; j++) {
+          uint64 va = ROUNDDOWN((uint64)parent->mapped_info[i].va, PGSIZE) + j * PGSIZE;
+          uint64 pa = (uint64) alloc_page();
+
+          user_vm_map(child->pagetable, va, PGSIZE, pa,
+            prot_to_type(PROT_WRITE | PROT_READ, 1));
+
+          memcpy((void*)pa, (void*)lookup_pa(parent->pagetable, va), PGSIZE);
+        }
+
+        child->mapped_info[child->total_mapped_region].va = parent->mapped_info[i].va;
+        child->mapped_info[child->total_mapped_region].npages =
+          parent->mapped_info[i].npages;
+        child->mapped_info[child->total_mapped_region].seg_type = DATA_SEGMENT;
         child->total_mapped_region++;
         break;
     }

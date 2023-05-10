@@ -19,12 +19,12 @@ int main(void) {
             flag = 2;
             printu("Grandchild process end, flag = %d.\n", flag);
         } else {
-            wait(pid);
-            printu("Child process end, flag = %d.\n", flag);
+            int w = wait(pid);
+            printu("Child process end, flag = %d, wait = %d.\n", flag, w);
         }
     } else {
-        wait(-1);
-        printu("Parent process end, flag = %d.\n", flag);
+        int w = wait(-1);
+        printu("Parent process end, flag = %d, wait = %d.\n", flag, w);
     }
     exit(0);
     return 0;
