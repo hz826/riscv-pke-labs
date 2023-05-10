@@ -71,6 +71,8 @@ typedef struct process_t {
 
   // accounting. added @lab3_3
   int tick_count;
+
+  struct process_t *semaphore_next;
 }process;
 
 // switch to run user app
