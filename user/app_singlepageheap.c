@@ -41,6 +41,8 @@ int main(void) {
 //  else{
 //    printu("0x%lx 0x%lx\n", m, n);
 //  }
+  better_free(n);
+  better_free(p);
   exit(0);
   return 0;
 }

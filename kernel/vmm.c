@@ -205,90 +205,161 @@ void user_vm_unmap(pagetable_t page_dir, uint64 va, uint64 size, int free) {
   }
 }
 
-alloc_info *last_alloc = NULL;
+bid_linked_list valid_page_info_head, empty_page_info_head;
+bid_linked_list valid_segment_info_head, empty_segment_info_head;
 
-uint64 user_malloc(uint64 size, int perm) {
-  sprint(">>> malloc begin\n");
-  size += sizeof(alloc_info);
+void bid_linked_list_del(bid_linked_list *p) {
+  if (p->pre) p->pre->suc = p->suc;
+  if (p->suc) p->suc->pre = p->pre;
+}
 
-  g_ufree_page = ((g_ufree_page+7) >> 3) << 3;
+void bid_linked_list_app(bid_linked_list *p, bid_linked_list *np) {
+  np->pre = p;
+  np->suc = p->suc;
+  if (p->suc) p->suc->pre = np;
+  p->suc = np;
+}
 
-  if (ROUNDDOWN(g_ufree_page, PGSIZE) != ROUNDDOWN(g_ufree_page+sizeof(alloc_info)-1, PGSIZE))
-    g_ufree_page = ROUNDDOWN(g_ufree_page+sizeof(alloc_info)-1, PGSIZE);
+void delete_element(bid_linked_list *empty, bid_linked_list* p) {
+  bid_linked_list_del(p);
+  bid_linked_list_app(empty, p);
+}
 
-  uint64 first = ROUNDDOWN(g_ufree_page, PGSIZE), last = ROUNDDOWN(g_ufree_page + size - 1, PGSIZE); // virtual
-  
-  sprint(">>> first = %p    last = %p\n", first, last);
-  
-  for (uint64 vi = first; vi <= last; vi += PGSIZE) {
-    pte_t *pte = page_walk((pagetable_t)current->pagetable, vi, 1);
-    if (!(*pte & PTE_V)) {
-      uint64 pa = (uint64)alloc_page();
-      sprint(">>> ALLOC PAGE %p\n", pa);
-      *pte = PA2PTE(pa) | perm | PTE_V;
+void* get_element(bid_linked_list *valid, bid_linked_list *empty, int size) {
+  if (empty->suc == NULL) {
+    uint64 pa = (uint64)alloc_page();
+    // sprint(">>> pa = %p\n", pa);
+    memset((void*)pa, 0, sizeof(pa));
+    for (int i=0;i+size<=PGSIZE;i+=size) {
+      delete_element(empty, (void*)(pa+i));
     }
-    sprint(">>> *pte = %p\n", *pte);
+  }
+  bid_linked_list *ret = empty->suc;
+  bid_linked_list_del(ret);
+  // bid_linked_list_app(valid, ret);
+  return ret;
+}
+
+void delete_page_info(page_info *p) {delete_element(&empty_page_info_head, (bid_linked_list*)p);}
+page_info *get_page_info() {return (page_info*) get_element(&valid_page_info_head, &empty_page_info_head, sizeof(page_info));}
+void delete_segment_info(segment_info *p) {delete_element(&empty_segment_info_head, (bid_linked_list*)p);}
+segment_info *get_segment_info() {return (segment_info*) get_element(&valid_segment_info_head, &empty_segment_info_head, sizeof(segment_info));}
+
+uint64 alloc_page_with_vm(int perm) {
+  uint64 pa = (uint64)alloc_page();
+  g_ufree_page = ROUNDDOWN(g_ufree_page+PGSIZE-1, PGSIZE);
+  pte_t *pte = page_walk((pagetable_t)current->pagetable, g_ufree_page, 1);
+  *pte = PA2PTE(pa) | perm | PTE_V;
+  uint64 ret = g_ufree_page;
+  g_ufree_page += PGSIZE;
+  sprint(">>> new page with pa=%p va=%p\n", pa, ret);
+  return ret;
+}
+
+uint64 user_malloc_small(uint64 size, int perm) {
+  sprint(">>> user malloc %d\n", size);
+  segment_info *found = NULL;
+  for (segment_info *p=(segment_info*)valid_segment_info_head.suc;p;p=(segment_info*)p->suc) {
+    sprint(">>> searching va=%p size=%d occupy=%d\n", p->va, p->size, p->occupy);
+    if (!p->occupy && p->size >= size) {
+      found = p;
+      break;
+    }
   }
 
-  sprint(">>> walk finished\n");
+  if (!found) {
+    // sprint(">>> not found\n");
+    found = get_segment_info();
+    bid_linked_list_app(&valid_segment_info_head, (bid_linked_list*)found);
+    found->va = alloc_page_with_vm(perm);
+    found->size = PGSIZE;
+    found->occupy = 0;
+  }
 
-  alloc_info *header = (alloc_info*) user_va_to_pa((pagetable_t)current->pagetable, (void*)g_ufree_page);
-  sprint(">>> header = %p\n", header);
-  header->pre = last_alloc;
-  header->suc = NULL;
-  header->size = size;
-  if (last_alloc) last_alloc->suc = header;
-  last_alloc = header;
+  sprint(">>> found va=%p size=%d\n", found->va, found->size);
 
-  uint64 va_ret = g_ufree_page + sizeof(alloc_info);
-  g_ufree_page += size;
-  sprint(">>> header.pre = %p  header.suc = %p  header.siz = %d\n", header->pre, header->suc, header->size);
-  sprint(">>> last_alloc = %p\n", last_alloc);
-  sprint(">>> malloc end\n");
-  return va_ret;
+  found->occupy = 1;
+  if (found->size > size) {
+    segment_info *rest = get_segment_info();
+    bid_linked_list_app((bid_linked_list*)found, (bid_linked_list*)rest);
+    rest->va = found->va + size;
+    rest->size = found->size - size;
+    rest->occupy = 0;
+    sprint(">>> rest va=%p size=%d\n", rest->va, rest->size);
+    bid_linked_list_app((bid_linked_list*)found, (bid_linked_list*)rest);
+  }
+  found->size = size;
+  return found->va;
+}
+
+uint64 user_malloc_big(uint64 size, int perm) {  
+  g_ufree_page = ROUNDDOWN(g_ufree_page+PGSIZE-1, PGSIZE);
+  uint64 va = g_ufree_page;
+  int pagenum = (size+PGSIZE+1) / PGSIZE;
+  page_info *last = NULL;
+  for (int i=0;i<pagenum;i++) {
+    page_info *now = get_page_info();
+    if (last != NULL) last->next = now;
+    last = now;
+    now->va = alloc_page_with_vm(perm);
+  }
+  return va;
+}
+
+uint64 user_malloc(uint64 size, int perm) {
+  if (size >= PGSIZE) {
+    return user_malloc_big(size, perm);
+  } else {
+    return user_malloc_small(size, perm);
+  }
 }
 
 void free_page_by_va(uint64 va) {
+  sprint(">>> free page by va=%p\n", va);
   pte_t *pte;
   if ((pte = page_walk((pagetable_t)current->pagetable, va, 0)) == 0) return;
   *pte &= ~PTE_V;
   uint64 pa = PTE2PA((uint64) *pte);
-  sprint(">>> FREE PAGE %p\n", pa);
   free_page((void*) pa);
 }
 
-void user_free(uint64 va) {
-  sprint(">>> free begin\n");
-  va -= sizeof(alloc_info);
-  alloc_info *header = (alloc_info*) user_va_to_pa((pagetable_t)current->pagetable, (void*)va);
-
-  sprint(">>> header = %p\n", header);
-  sprint(">>> header.pre = %p  header.suc = %p  header.siz = %d\n", header->pre, header->suc, header->size);
-
-  uint64 first = ROUNDDOWN(va, PGSIZE), last = ROUNDDOWN(va + header->size - 1, PGSIZE);
-  for (uint64 vi = first; vi <= last; vi += PGSIZE) {
-    if (vi != first && vi != last) {
-      free_page_by_va(vi);
+void user_free_small(segment_info *p) {
+  sprint(">>> user free %p\n", p->va);
+  p->occupy = 0;
+  if (p->pre && p->pre != &valid_segment_info_head) {
+    segment_info *L = (segment_info*) p->pre;
+    if (ROUNDDOWN(L->va, PGSIZE) == ROUNDDOWN(p->va, PGSIZE) && !L->occupy) {
+      p->va = L->va;
+      p->size = p->size + L->size;
     }
+    delete_segment_info(L);
   }
-
-  uint64 pre = header->pre ? ROUNDDOWN((uint64)header->pre + header->pre->size - 1, PGSIZE) : 0;
-  uint64 suc = ROUNDDOWN((uint64)header->suc, PGSIZE);
-
-  first = (uint64)user_va_to_pa((pagetable_t)current->pagetable, (void*)first);
-  last  = (uint64)user_va_to_pa((pagetable_t)current->pagetable, (void*)last);
-  sprint(">>> first = %p  last = %p\n", first, last);
-  sprint(">>> pre = %p  suc = %p\n", pre, suc);
-
-  if (first == last) {
-    if (pre != first && suc != last) free_page_by_va(first);
-  } else {
-    if (pre != first) free_page_by_va(first);
-    if (suc != last) free_page_by_va(last);
+  if (p->suc) {
+    segment_info *R = (segment_info*) p->suc;
+    if (ROUNDDOWN(R->va, PGSIZE) == ROUNDDOWN(p->va, PGSIZE) && !R->occupy) {
+      p->size = p->size + R->size;
+    }
+    delete_segment_info(R);
   }
+  if (p->size == PGSIZE) {
+    free_page_by_va(p->va);
+  }
+}
 
-  if (header == last_alloc) last_alloc = header->pre;
-  if (header->pre) header->pre->suc = header->suc;
-  if (header->suc) header->suc->pre = header->pre;
-  sprint(">>> free end\n");
+void user_free_big(page_info *p) {
+  for (page_info *q=p;q;) {
+    page_info *nxt = q->next;
+    free_page_by_va(q->va);
+    delete_page_info(q);
+    q = nxt;
+  }
+}
+
+void user_free(uint64 va) {
+  for (segment_info *p=(segment_info*)valid_segment_info_head.suc;p;p=(segment_info*)p->suc) if (p->va == va) {
+    user_free_small(p);
+  }
+  for (page_info *p=(page_info*)valid_page_info_head.suc;p;p=(page_info*)p->suc) if (!p->next && p->va == va) {
+    user_free_big(p);
+  }
 }
