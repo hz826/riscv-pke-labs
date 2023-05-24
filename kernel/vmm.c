@@ -257,10 +257,16 @@ uint64 alloc_page_with_vm(int perm) {
 }
 
 uint64 user_malloc_small(uint64 size, int perm) {
-  sprint(">>> user malloc %d\n", size);
+  sprint(">>> user malloc small %d\n", size);
   segment_info *found = NULL;
-  for (segment_info *p=(segment_info*)valid_segment_info_head.suc;p;p=(segment_info*)p->suc) {
+
+  sprint(">>> iteration begin\n");
+  for (segment_info *p=(segment_info*)valid_segment_info_head.suc;p;p=(segment_info*)p->suc) 
     sprint(">>> searching va=%p size=%d occupy=%d\n", p->va, p->size, p->occupy);
+  sprint(">>> iteration end\n");
+  
+  for (segment_info *p=(segment_info*)valid_segment_info_head.suc;p;p=(segment_info*)p->suc) {
+    // sprint(">>> searching va=%p size=%d occupy=%d\n", p->va, p->size, p->occupy);
     if (!p->occupy && p->size >= size) {
       found = p;
       break;
@@ -286,7 +292,6 @@ uint64 user_malloc_small(uint64 size, int perm) {
     rest->size = found->size - size;
     rest->occupy = 0;
     sprint(">>> rest va=%p size=%d\n", rest->va, rest->size);
-    bid_linked_list_app((bid_linked_list*)found, (bid_linked_list*)rest);
   }
   found->size = size;
   return found->va;
@@ -324,22 +329,22 @@ void free_page_by_va(uint64 va) {
 }
 
 void user_free_small(segment_info *p) {
-  sprint(">>> user free %p\n", p->va);
+  sprint(">>> user free small %p\n", p->va);
   p->occupy = 0;
   if (p->pre && p->pre != &valid_segment_info_head) {
     segment_info *L = (segment_info*) p->pre;
     if (ROUNDDOWN(L->va, PGSIZE) == ROUNDDOWN(p->va, PGSIZE) && !L->occupy) {
       p->va = L->va;
       p->size = p->size + L->size;
+      delete_segment_info(L);
     }
-    delete_segment_info(L);
   }
   if (p->suc) {
     segment_info *R = (segment_info*) p->suc;
     if (ROUNDDOWN(R->va, PGSIZE) == ROUNDDOWN(p->va, PGSIZE) && !R->occupy) {
       p->size = p->size + R->size;
+      delete_segment_info(R);
     }
-    delete_segment_info(R);
   }
   if (p->size == PGSIZE) {
     free_page_by_va(p->va);
@@ -356,10 +361,18 @@ void user_free_big(page_info *p) {
 }
 
 void user_free(uint64 va) {
-  for (segment_info *p=(segment_info*)valid_segment_info_head.suc;p;p=(segment_info*)p->suc) if (p->va == va) {
-    user_free_small(p);
+  sprint(">>> iteration begin\n");
+  for (segment_info *p=(segment_info*)valid_segment_info_head.suc;p;p=(segment_info*)p->suc) 
+    sprint(">>> searching va=%p size=%d occupy=%d\n", p->va, p->size, p->occupy);
+  sprint(">>> iteration end\n");
+
+  for (segment_info *p=(segment_info*)valid_segment_info_head.suc;p;p=(segment_info*)p->suc) {
+    if (p->va == va) {
+      user_free_small(p);
+      break;
+    }
   }
-  for (page_info *p=(page_info*)valid_page_info_head.suc;p;p=(page_info*)p->suc) if (!p->next && p->va == va) {
-    user_free_big(p);
+  for (page_info *p=(page_info*)valid_page_info_head.suc;p;p=(page_info*)p->suc) {
+    if (!p->next && p->va == va) user_free_big(p);
   }
 }
